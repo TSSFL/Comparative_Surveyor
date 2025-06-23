@@ -5,6 +5,7 @@ import streamlit as st
 from io import BytesIO
 from scipy.stats import ttest_rel, wilcoxon
 import openpyxl
+from xlsxwriter import Workbook
 
 #Display info on charts
 textstr = 'Created at \nwww.tssfl.com'
