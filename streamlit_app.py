@@ -65,7 +65,9 @@ class DataTransformer:
             for bar, mean in zip(post_bars, post_mean):
                 ax.text(bar.get_width() + offset, bar.get_y() + bar.get_height() / 2, f"{mean:.2f}", va="center", ha="left", color=text_color, fontsize=fontsize)
 
-            questions = sorted(questions, key=lambda x: int(x[1:]), reverse=True)
+            # Labels must stay in the order the bars were drawn. Re-sorting them
+            # here paired every label with the wrong bar, and int(x[1:]) also
+            # raised ValueError on any column not named like "Q7".
             ax.set_yticks(y_positions)
             ax.set_yticklabels(questions, fontsize=fontsize)
             
@@ -80,10 +82,14 @@ class DataTransformer:
                 ax.text(i, qm, f"{qm:.2f}", va="top", ha="center", fontsize=fontsize-2, color=color_post)
             ax.set_xticks(range(len(questions)))
             ax.set_xticklabels(questions, rotation=45, ha="right", fontsize=fontsize)
+            ax.legend(loc="lower left", bbox_to_anchor=(0, 1.06), fontsize=fontsize)
 
-        ax.set_xlabel("Mean Score (scale 1 to 5)", fontsize=fontsize)
+        # The mean scores lie along x for the horizontal bars, along y for the lines.
+        if chart_type == "Bar":
+            ax.set_xlabel("Mean Score (scale 1 to 5)", fontsize=fontsize)
+        else:
+            ax.set_ylabel("Mean Score (scale 1 to 5)", fontsize=fontsize)
         ax.set_title("Comparison of Mean Scores (Pre- vs. Post-Intervention)", fontsize=fontsize)
-        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.06), fontsize=fontsize)
 
         for spine in ['right', 'left', 'top']:
             ax.spines[spine].set_visible(False)
@@ -114,7 +120,10 @@ def convert_df_to_excel(df_dict):
     return output
 
 def generate_ai_insights(pre_df, post_df):
-    deltas = post_df["Mean Score"] - pre_df["Mean Score"]
+    deltas = (post_df["Mean Score"] - pre_df["Mean Score"]).dropna()
+    if deltas.empty:
+        return "**AI-Assisted Insights:**\n\n- No comparable questions to analyse."
+
     improved = deltas[deltas > 0]
     declined = deltas[deltas < 0]
     unchanged = deltas[deltas == 0]
@@ -141,54 +150,39 @@ def run_statistical_tests(pre_df, post_df):
         "post": post_df["Mean Score"]
     }).dropna()
 
-    if paired_data.empty:
-        return "**Statistical Significance Test:**\n\n- Not enough valid data for statistical testing."
+    if len(paired_data) < 2:
+        return ("**Statistical Significance Test:**\n\n- Not enough valid data for "
+                "statistical testing (at least two paired questions are required).")
+
+    if (paired_data["pre"] - paired_data["post"]).abs().max() == 0:
+        return ("**Statistical Significance Test:**\n\n- The two waves are identical on "
+                "every question, so there is no difference to test.")
 
     try:
-        # Attempt Wilcoxon, handle ties with exact=False for better robustness
-        stat, p = wilcoxon(paired_data["pre"], paired_data["post"], alternative='two-sided', exact=False)  #Two sided test
+        # scipy names this parameter `method`, not `exact`. 'approx' is the normal
+        # approximation, which stays defined when tied ranks rule out the exact test.
+        with np.errstate(invalid='ignore', divide='ignore'):
+            stat, p = wilcoxon(paired_data["pre"], paired_data["post"],
+                               alternative='two-sided', method='approx')
         test_name = "Wilcoxon Signed-Rank Test"
+        if not np.isfinite(p):
+            raise ValueError("Wilcoxon returned a non-finite p-value")
         #Check for paired data - if there is a mismatch of respondents, the paired test is wrong.
         if len(pre_df) != len(post_df):
             test_name += " (Note: Data may not be truly paired. Consider independent samples test.)"
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         print(f"Wilcoxon failed: {e}")  # Log the error for debugging
         try:
             #Try paired t-test if Wilcoxon fails - but again, check for paired data
             stat, p = ttest_rel(paired_data["pre"], paired_data["post"])
             test_name = "Paired t-Test"
+            if not np.isfinite(p):
+                raise ValueError("t-test returned a non-finite p-value")
             if len(pre_df) != len(post_df):
                 test_name += " (Note: Data may not be truly paired. Consider independent samples test.)"
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             print(f"Paired t-test failed: {e}")
             return "**Statistical Significance Test:**\n\n- Data unsuitable for both paired tests."
-
-
-    result = f"""
-    **Statistical Significance Test:**
-    - Test used: {test_name}
-    - Test Statistic: {stat:.4f}
-    - p-value: {p:.4f}
-    {'✅ Statistically significant (p < 0.05)' if p < 0.05 else '❌ Not statistically significant (p ≥ 0.05)'}
-    """
-    return result
-
-
-def run_statistical_tests(pre_df, post_df):
-    paired_data = pd.DataFrame({
-        "pre": pre_df["Mean Score"],
-        "post": post_df["Mean Score"]
-    }).dropna()
-
-    if paired_data.empty:
-        return "**Statistical Significance Test:**\n\n- Not enough valid data for statistical testing."
-
-    try:
-        stat, p = wilcoxon(paired_data["pre"], paired_data["post"])
-        test_name = "Wilcoxon Signed-Rank Test"
-    except Exception:
-        stat, p = ttest_rel(paired_data["pre"], paired_data["post"])
-        test_name = "Paired t-Test"
 
     result = f"""
     **Statistical Significance Test:**
